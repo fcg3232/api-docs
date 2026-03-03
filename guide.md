@@ -1,0 +1,984 @@
+# SecondaryDAO Trader API Documentation
+
+**Version:** 1.0
+**Base URL:** `https://api.secondarydao.com` (production) | `http://localhost:5000` (development)
+
+This document covers everything a trader needs to build applications that interact with SecondaryDAO programmatically: creating API keys, authentication, available endpoints, rate limits, and code examples.
+
+---
+
+## Table of Contents
+
+1. [Getting an API Key](#1-getting-an-api-key)
+2. [Authentication](#2-authentication)
+3. [Rate Limits](#3-rate-limits)
+4. [API Endpoints](#4-api-endpoints)
+   - [Market Data (Public)](#41-market-data-public--no-auth-needed)
+   - [Portfolio](#42-portfolio)
+   - [Orders](#43-orders)
+   - [Trading](#44-trading)
+   - [Distributions](#45-distributions)
+   - [Buyouts](#46-buyouts)
+   - [API Key Management](#47-api-key-management)
+5. [Scopes Reference](#5-scopes-reference)
+6. [Error Codes](#6-error-codes)
+7. [Code Examples](#7-code-examples)
+8. [Security Best Practices](#8-security-best-practices)
+9. [Websocket Events](#9-websocket-events)
+
+---
+
+## 1. Getting an API Key
+
+### Prerequisites
+
+Before you can create an API key, your account must meet these requirements:
+
+1. **Email verified** - Complete email verification during registration
+2. **KYC approved** - Complete identity verification through our KYC provider
+3. **AML-compliant wallet** - Connect a wallet and pass AML screening
+
+### Creating a Key
+
+Log into the SecondaryDAO web application, navigate to Account Settings, and create an API key. You can also create keys via the API if you have an active JWT session.
+
+When you create a key, you choose:
+- **Label** - A name for this key (e.g., "My Trading Bot")
+- **Scopes** - What the key can do (see [Scopes Reference](#5-scopes-reference))
+- **IP Whitelist** (optional) - Lock the key to specific IP addresses
+
+You will receive:
+- **Key ID** (`keyId`) - Your public identifier, like `sd_live_a1b2c3d4e5f6`
+- **Secret** (`secret`) - A 96-character hex string
+
+**CRITICAL: The secret is shown exactly ONCE at creation time. Save it immediately. It cannot be retrieved later.** If you lose it, revoke the key and create a new one.
+
+---
+
+## 2. Authentication
+
+Every authenticated API request requires three headers:
+
+| Header | Value | Description |
+|--------|-------|-------------|
+| `X-SD-KEY` | `sd_live_a1b2c3d4e5f6` | Your API key ID |
+| `X-SD-SECRET` | `<96-char hex string>` | Your API secret |
+| `X-SD-TIMESTAMP` | `1709500000000` | Current Unix timestamp in milliseconds |
+
+### Timestamp Validation
+
+The `X-SD-TIMESTAMP` must be within **30 seconds** of the server's time. If your clock is out of sync, you'll receive a `401` error with `serverTime` in the response body so you can calculate the offset.
+
+### Example Request
+
+```bash
+curl -X GET "https://api.secondarydao.com/api/portfolio/holdings?walletAddress=0xYourWallet" \
+  -H "X-SD-KEY: sd_live_a1b2c3d4e5f6" \
+  -H "X-SD-SECRET: your96charhexsecrethere..." \
+  -H "X-SD-TIMESTAMP: $(date +%s000)" \
+  -H "Content-Type: application/json"
+```
+
+---
+
+## 3. Rate Limits
+
+| Category | Limit | Window |
+|----------|-------|--------|
+| General API calls | 300 requests | 1 minute |
+| Order creation | 30 requests | 1 minute |
+| Trade execution | 10 requests | 1 minute |
+
+Rate limit information is returned in response headers:
+- `RateLimit-Limit` - Maximum requests allowed
+- `RateLimit-Remaining` - Requests remaining in current window
+- `RateLimit-Reset` - Unix timestamp when the window resets
+
+When you hit a rate limit, you'll receive a `429 Too Many Requests` response.
+
+---
+
+## 4. API Endpoints
+
+### 4.1 Market Data (Public -- No Auth Needed)
+
+These endpoints are publicly accessible. No API key required, but you can use one.
+
+#### List Properties
+
+```
+GET /api/properties
+```
+
+Returns all available properties with market data.
+
+**Response:**
+```json
+{
+  "success": true,
+  "properties": [
+    {
+      "_id": "64abc123...",
+      "name": "Sunset Ridge Apartments",
+      "location": "Austin, TX",
+      "propertyValue": 2000000,
+      "tokenPrice": 2000,
+      "totalSupply": 1000,
+      "tokenSymbol": "SRAX",
+      "status": "trading",
+      "bestBid": 1950,
+      "bestAsk": 2050,
+      "lastTradePrice": 2010
+    }
+  ]
+}
+```
+
+#### Get Explorer Properties
+
+```
+GET /api/explorer/properties
+```
+
+Returns properties visible in the explorer with contract addresses and distribution history.
+
+**Response includes:**
+- Property metadata (name, location, value)
+- Contract addresses (propertyCore, escrowContract, distributionManager, buyoutRegistry)
+- Status (selling, trading, coming_soon, halted)
+- Last trade prices
+
+#### Check Trading Status
+
+```
+GET /api/trading-status/status/:propertyId
+```
+
+Returns the current trading state for a property.
+
+**Response:**
+```json
+{
+  "buttonState": "buy",
+  "buttonText": "Buy Tokens",
+  "message": "Trading is active",
+  "timeRemaining": null
+}
+```
+
+Possible `buttonState` values: `buy`, `launching`, `coming_soon`, `disabled`, `auto_launch_ready`
+
+#### Get Order Book
+
+```
+GET /api/order-book/book/:propertyId?depth=10
+```
+
+Returns the current order book (buy and sell sides) for a property.
+
+#### Get Token Statistics
+
+```
+GET /api/token-stats/total-supply
+GET /api/token-stats/total-balance
+```
+
+#### Get Merkle Proof
+
+```
+GET /api/merkle/proof/:walletAddress
+```
+
+Returns the merkle proof needed for on-chain token purchases.
+
+**Response:**
+```json
+{
+  "address": "0x1234...",
+  "isWhitelisted": true,
+  "root": "0xabc...",
+  "proof": ["0x...", "0x...", "0x..."]
+}
+```
+
+#### Get Active Buyout Offers
+
+```
+GET /api/buyout/active-offers/:propertyId
+```
+
+Returns active buyout offers for a property.
+
+---
+
+### 4.2 Portfolio
+
+**Required scope:** `portfolio:read`
+
+#### Get Portfolio Summary
+
+```
+GET /api/portfolio/summary?walletAddress=0xYourWallet
+```
+
+Returns a cached portfolio summary for the given wallet.
+
+#### Get Holdings
+
+```
+GET /api/portfolio/holdings?walletAddress=0xYourWallet
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "holdings": [
+    {
+      "propertyAddress": "0xabc...",
+      "propertyName": "Sunset Ridge Apartments",
+      "tokenSymbol": "SRAX",
+      "tokenAmount": "50",
+      "currentPrice": 2010,
+      "usdValue": 100500,
+      "percentageOwnership": 5.0
+    }
+  ]
+}
+```
+
+#### Get Distribution History
+
+```
+GET /api/portfolio/distributions?walletAddress=0xYourWallet
+```
+
+Returns distribution payments received by the wallet.
+
+#### Get Performance Data
+
+```
+GET /api/portfolio/performance?walletAddress=0xYourWallet&period=30d
+```
+
+Returns performance chart data over a time period.
+
+#### Get Trade History
+
+```
+GET /api/portfolio/trades?walletAddress=0xYourWallet
+```
+
+Returns past trades for the wallet.
+
+#### Get Income Summary
+
+```
+GET /api/portfolio/income?walletAddress=0xYourWallet
+```
+
+Returns rental income breakdown.
+
+---
+
+### 4.3 Orders
+
+#### List Orders
+
+**Required scope:** `orders:read`
+
+```
+GET /api/trading/orders
+GET /api/trading/orders/buy
+GET /api/trading/orders/sell
+```
+
+Query parameters: `type`, `status`, `propertyId`
+
+#### List My Orders
+
+**Required scope:** `orders:read`
+
+```
+GET /api/order-book/my-orders?status=open&propertyId=xxx&page=1&limit=20
+```
+
+Returns orders created by the authenticated user.
+
+#### Create Order
+
+**Required scope:** `orders:write`
+
+```
+POST /api/order-book/create
+```
+
+**Request body:**
+```json
+{
+  "propertyId": "64abc123...",
+  "orderType": "buy",
+  "executionType": "limit",
+  "tokenAmount": 10,
+  "pricePerToken": 2000,
+  "walletAddress": "0xYourWallet",
+  "timeInForce": "GTC",
+  "expirationHours": 168,
+  "conditions": {
+    "minFillAmount": 1,
+    "maxSlippage": 2.0,
+    "postOnly": false
+  }
+}
+```
+
+**Fields:**
+| Field | Required | Description |
+|-------|----------|-------------|
+| `propertyId` | Yes | MongoDB ID of the property |
+| `orderType` | Yes | `buy` or `sell` |
+| `executionType` | Yes | `market` or `limit` |
+| `tokenAmount` | Yes | Number of tokens |
+| `pricePerToken` | Yes (limit) | Price per token in USD |
+| `walletAddress` | Yes | Your connected wallet address |
+| `timeInForce` | No | `GTC` (default), `IOC`, `FOK`, `GTD` |
+| `expirationHours` | No | 1-720 hours (max 30 days) |
+| `conditions.minFillAmount` | No | Minimum partial fill amount |
+| `conditions.maxSlippage` | No | Max slippage % (0-50) |
+| `conditions.postOnly` | No | Only place if maker (no taker fill) |
+
+**Time in Force options:**
+- `GTC` - Good Till Cancelled (stays until filled or cancelled)
+- `IOC` - Immediate Or Cancel (fill what you can, cancel rest)
+- `FOK` - Fill Or Kill (all or nothing, immediately)
+- `GTD` - Good Till Date (expires at expirationHours)
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Order created successfully",
+  "order": {
+    "_id": "...",
+    "orderId": "ORD-...",
+    "propertyId": "...",
+    "orderType": "buy",
+    "tokenAmount": 10,
+    "pricePerToken": 2000,
+    "status": "open",
+    "createdAt": "2026-03-03T..."
+  }
+}
+```
+
+---
+
+### 4.4 Trading
+
+#### Gasless Token Purchase (IPS)
+
+**Required scope:** `trading:execute`
+
+```
+POST /api/token-purchase/gasless
+```
+
+Purchase tokens during an Initial Property Sale using ERC-2612 permit signatures. The platform pays gas.
+
+**Request body:**
+```json
+{
+  "propertyId": "64abc123...",
+  "amount": "100000000",
+  "isUSDT": false,
+  "buyerAddress": "0xYourWallet",
+  "signature": {
+    "v": 28,
+    "r": "0x...",
+    "s": "0x...",
+    "deadline": 1709500000
+  }
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| `propertyId` | MongoDB ID of the property |
+| `amount` | Amount in stablecoin units (6 decimals, so 100 USDC = `100000000`) |
+| `isUSDT` | `false` for USDC, `true` for USDT |
+| `buyerAddress` | Your wallet address |
+| `signature` | ERC-2612 permit signature (v, r, s, deadline) |
+
+**Note:** Limited to 10 gasless purchases per day per wallet.
+
+---
+
+### 4.5 Distributions
+
+**Required scope:** `distributions:read`
+
+#### Get Unclaimed Earnings
+
+```
+GET /api/distributions/unclaimed/:walletAddress
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "totalUnclaimed": 150.50,
+  "byProperty": [
+    {
+      "propertyId": "...",
+      "propertyName": "Sunset Ridge",
+      "unclaimed": 150.50
+    }
+  ]
+}
+```
+
+#### Get Claim Data (Merkle Proofs)
+
+```
+GET /api/distributions/claim-data/:walletAddress
+```
+
+Returns merkle proofs needed to claim distributions on-chain.
+
+#### Get Claim History
+
+```
+GET /api/distributions/history/:walletAddress
+```
+
+Returns past distribution claims.
+
+#### Record a Claim
+
+```
+POST /api/distributions/record-claim
+```
+
+Call this after a successful on-chain claim transaction to record it in the system.
+
+**Request body:**
+```json
+{
+  "walletAddress": "0xYourWallet",
+  "epoch": 5,
+  "txHash": "0x...",
+  "amount": "150500000"
+}
+```
+
+---
+
+### 4.6 Buyouts
+
+**Required scope:** `buyout:read`
+
+#### Check Buyout Approval
+
+```
+GET /api/buyout/check-approval/:propertyId
+```
+
+Check if the authenticated user is approved for buyout offers.
+
+#### Get Offer Requirements
+
+```
+GET /api/buyout/offer-requirements/:propertyId?walletAddress=0xYourWallet
+```
+
+Returns the minimum token amount, premium percentages, and fees required for a buyout offer.
+
+#### Get My Token Position
+
+```
+GET /api/buyout/my-position/:propertyId
+```
+
+Returns the authenticated user's token balance and ownership percentage for a property.
+
+---
+
+### 4.7 API Key Management
+
+**Requires JWT authentication (web login), not API key.**
+
+These endpoints are for managing your API keys through the web UI or authenticated session.
+
+#### Create API Key
+
+```
+POST /api/api-keys
+```
+
+**Request body:**
+```json
+{
+  "label": "My Trading Bot",
+  "scopes": ["portfolio:read", "orders:read", "orders:write"],
+  "allowedIPs": ["203.0.113.50"],
+  "expiresIn": 8760
+}
+```
+
+**Response (SAVE THE SECRET!):**
+```json
+{
+  "success": true,
+  "message": "API key created. Save the secret -- it will not be shown again.",
+  "keyId": "sd_live_a1b2c3d4e5f6",
+  "secret": "a1b2c3d4e5f6...96 chars total...",
+  "label": "My Trading Bot",
+  "scopes": ["portfolio:read", "orders:read", "orders:write"],
+  "allowedIPs": ["203.0.113.50"],
+  "expiresAt": "2027-03-03T00:00:00.000Z",
+  "createdAt": "2026-03-03T00:00:00.000Z"
+}
+```
+
+#### List API Keys
+
+```
+GET /api/api-keys
+```
+
+Returns all your API keys (never includes secrets).
+
+#### Revoke API Key
+
+```
+DELETE /api/api-keys/:keyId
+```
+
+Revokes the key immediately. Any in-flight requests with this key will fail.
+
+#### Update API Key
+
+```
+PATCH /api/api-keys/:keyId
+```
+
+Update label or IP whitelist. Scopes cannot be changed after creation.
+
+```json
+{
+  "label": "Updated Label",
+  "allowedIPs": ["203.0.113.50", "198.51.100.0/24"]
+}
+```
+
+---
+
+## 5. Scopes Reference
+
+| Scope | Access |
+|-------|--------|
+| `market:read` | Browse properties, trading status, token stats |
+| `portfolio:read` | View holdings, distributions, performance, trades, income |
+| `orders:read` | View open orders and order history |
+| `orders:write` | Create and cancel buy/sell orders |
+| `trading:execute` | Execute gasless token purchases |
+| `distributions:read` | View unclaimed earnings, claim proofs, claim history, record claims |
+| `buyout:read` | View buyout offers, approval status, position, requirements |
+
+**Recommended scope combinations:**
+
+| Use Case | Scopes |
+|----------|--------|
+| Read-only portfolio tracker | `portfolio:read`, `distributions:read` |
+| Market data monitor | `market:read` |
+| Trading bot | `orders:read`, `orders:write`, `market:read` |
+| Full access bot | All scopes |
+
+---
+
+## 6. Error Codes
+
+### HTTP Status Codes
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Success |
+| `201` | Created (new resource) |
+| `400` | Bad request (validation error) |
+| `401` | Authentication failed (invalid key, expired timestamp) |
+| `403` | Forbidden (insufficient scope, IP blocked, KYC/AML issue) |
+| `404` | Resource not found |
+| `429` | Rate limit exceeded |
+| `500` | Internal server error |
+
+### Application Error Codes
+
+| Code | Description |
+|------|-------------|
+| `NO_AUTH_TOKEN` | Missing authentication headers |
+| `ACCOUNT_SUSPENDED` | Account is suspended from trading |
+| `KYC_REQUIRED` | KYC approval needed |
+| `WHITELIST_REQUIRED` | AML/whitelist approval needed |
+| `WALLET_BLACKLISTED` | Wallet is blocked for compliance |
+| `API_KEY_RATE_LIMIT_EXCEEDED` | API key rate limit hit |
+| `API_KEY_ORDER_RATE_LIMIT_EXCEEDED` | Order creation rate limit hit |
+| `API_KEY_TRADE_RATE_LIMIT_EXCEEDED` | Trade execution rate limit hit |
+
+---
+
+## 7. Code Examples
+
+### Python
+
+```python
+import requests
+import time
+
+class SecondaryDAOClient:
+    def __init__(self, base_url, key_id, secret):
+        self.base_url = base_url.rstrip('/')
+        self.key_id = key_id
+        self.secret = secret
+
+    def _headers(self):
+        return {
+            'X-SD-KEY': self.key_id,
+            'X-SD-SECRET': self.secret,
+            'X-SD-TIMESTAMP': str(int(time.time() * 1000)),
+            'Content-Type': 'application/json'
+        }
+
+    def get_properties(self):
+        """List all available properties (public, no auth needed)"""
+        r = requests.get(f'{self.base_url}/api/properties')
+        r.raise_for_status()
+        return r.json()
+
+    def get_holdings(self, wallet_address):
+        """Get token holdings for a wallet"""
+        r = requests.get(
+            f'{self.base_url}/api/portfolio/holdings',
+            params={'walletAddress': wallet_address},
+            headers=self._headers()
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def get_order_book(self, property_id, depth=10):
+        """Get the order book for a property (public)"""
+        r = requests.get(
+            f'{self.base_url}/api/order-book/book/{property_id}',
+            params={'depth': depth}
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def get_my_orders(self, status=None, property_id=None):
+        """Get your open orders"""
+        params = {}
+        if status:
+            params['status'] = status
+        if property_id:
+            params['propertyId'] = property_id
+        r = requests.get(
+            f'{self.base_url}/api/order-book/my-orders',
+            params=params,
+            headers=self._headers()
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def create_order(self, property_id, order_type, token_amount,
+                     price_per_token, wallet_address,
+                     execution_type='limit', time_in_force='GTC',
+                     expiration_hours=168):
+        """Create a buy or sell order"""
+        body = {
+            'propertyId': property_id,
+            'orderType': order_type,  # 'buy' or 'sell'
+            'executionType': execution_type,  # 'limit' or 'market'
+            'tokenAmount': token_amount,
+            'pricePerToken': price_per_token,
+            'walletAddress': wallet_address,
+            'timeInForce': time_in_force,
+            'expirationHours': expiration_hours
+        }
+        r = requests.post(
+            f'{self.base_url}/api/order-book/create',
+            json=body,
+            headers=self._headers()
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def get_unclaimed_distributions(self, wallet_address):
+        """Check unclaimed distribution earnings"""
+        r = requests.get(
+            f'{self.base_url}/api/distributions/unclaimed/{wallet_address}',
+            headers=self._headers()
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def get_trading_status(self, property_id):
+        """Check if a property is currently trading (public)"""
+        r = requests.get(
+            f'{self.base_url}/api/trading-status/status/{property_id}'
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+# Usage
+client = SecondaryDAOClient(
+    base_url='https://api.secondarydao.com',
+    key_id='sd_live_a1b2c3d4e5f6',
+    secret='your96charhexsecrethere...'
+)
+
+# Browse properties (no auth needed)
+properties = client.get_properties()
+for prop in properties.get('properties', []):
+    print(f"{prop['name']}: ${prop['tokenPrice']}/token, "
+          f"status={prop['status']}")
+
+# Check holdings
+holdings = client.get_holdings('0xYourWalletAddress')
+for h in holdings.get('holdings', []):
+    print(f"{h['propertyName']}: {h['tokenAmount']} tokens "
+          f"(${h['usdValue']})")
+
+# Place a limit buy order
+order = client.create_order(
+    property_id='64abc123...',
+    order_type='buy',
+    token_amount=5,
+    price_per_token=1950,
+    wallet_address='0xYourWalletAddress',
+    time_in_force='GTC',
+    expiration_hours=72
+)
+print(f"Order created: {order['order']['orderId']}")
+```
+
+### JavaScript / Node.js
+
+```javascript
+const axios = require('axios');
+
+class SecondaryDAOClient {
+  constructor(baseUrl, keyId, secret) {
+    this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.keyId = keyId;
+    this.secret = secret;
+  }
+
+  _headers() {
+    return {
+      'X-SD-KEY': this.keyId,
+      'X-SD-SECRET': this.secret,
+      'X-SD-TIMESTAMP': String(Date.now()),
+      'Content-Type': 'application/json'
+    };
+  }
+
+  async getProperties() {
+    const { data } = await axios.get(`${this.baseUrl}/api/properties`);
+    return data;
+  }
+
+  async getHoldings(walletAddress) {
+    const { data } = await axios.get(
+      `${this.baseUrl}/api/portfolio/holdings`,
+      { params: { walletAddress }, headers: this._headers() }
+    );
+    return data;
+  }
+
+  async getOrderBook(propertyId, depth = 10) {
+    const { data } = await axios.get(
+      `${this.baseUrl}/api/order-book/book/${propertyId}`,
+      { params: { depth } }
+    );
+    return data;
+  }
+
+  async getMyOrders(params = {}) {
+    const { data } = await axios.get(
+      `${this.baseUrl}/api/order-book/my-orders`,
+      { params, headers: this._headers() }
+    );
+    return data;
+  }
+
+  async createOrder({ propertyId, orderType, tokenAmount, pricePerToken,
+                      walletAddress, executionType = 'limit',
+                      timeInForce = 'GTC', expirationHours = 168 }) {
+    const { data } = await axios.post(
+      `${this.baseUrl}/api/order-book/create`,
+      {
+        propertyId, orderType, executionType,
+        tokenAmount, pricePerToken, walletAddress,
+        timeInForce, expirationHours
+      },
+      { headers: this._headers() }
+    );
+    return data;
+  }
+
+  async getUnclaimedDistributions(walletAddress) {
+    const { data } = await axios.get(
+      `${this.baseUrl}/api/distributions/unclaimed/${walletAddress}`,
+      { headers: this._headers() }
+    );
+    return data;
+  }
+
+  async getTradingStatus(propertyId) {
+    const { data } = await axios.get(
+      `${this.baseUrl}/api/trading-status/status/${propertyId}`
+    );
+    return data;
+  }
+}
+
+// Usage
+const client = new SecondaryDAOClient(
+  'https://api.secondarydao.com',
+  'sd_live_a1b2c3d4e5f6',
+  'your96charhexsecrethere...'
+);
+
+(async () => {
+  // Browse properties
+  const { properties } = await client.getProperties();
+  properties.forEach(p =>
+    console.log(`${p.name}: $${p.tokenPrice}/token, status=${p.status}`)
+  );
+
+  // Check holdings
+  const { holdings } = await client.getHoldings('0xYourWallet');
+  holdings.forEach(h =>
+    console.log(`${h.propertyName}: ${h.tokenAmount} tokens ($${h.usdValue})`)
+  );
+
+  // Place a limit buy order
+  const order = await client.createOrder({
+    propertyId: '64abc123...',
+    orderType: 'buy',
+    tokenAmount: 5,
+    pricePerToken: 1950,
+    walletAddress: '0xYourWallet'
+  });
+  console.log(`Order created: ${order.order.orderId}`);
+})();
+```
+
+---
+
+## 8. Security Best Practices
+
+1. **Never share your API secret.** Treat it like a password. If compromised, revoke the key immediately.
+
+2. **Use IP whitelisting.** If your bot runs from a fixed server, whitelist that IP address when creating the key.
+
+3. **Use minimum required scopes.** A portfolio tracker only needs `portfolio:read`. A trading bot needs `orders:read` + `orders:write`. Don't grant `trading:execute` unless you need gasless purchases.
+
+4. **Set key expiration.** Consider setting `expiresIn` when creating keys, especially for development/testing keys.
+
+5. **Store secrets in environment variables.** Never hardcode secrets in source code.
+
+6. **Monitor usage.** Use `GET /api/api-keys` to check `lastUsedAt` and `totalRequests` for each key.
+
+7. **Rotate keys periodically.** Create a new key, update your bot, then revoke the old key.
+
+8. **Auto-revocation triggers.** Your API keys will be automatically revoked if:
+   - You change your password
+   - Your AML status changes to 'failed'
+   - Your account is suspended
+   - An admin revokes your access
+
+---
+
+## 9. Websocket Events
+
+The platform uses WebSocket connections for real-time updates. WebSocket access is available through the web application. API key users should poll the REST endpoints for updates.
+
+**Recommended polling intervals:**
+- Order book: Every 5-10 seconds
+- Holdings: Every 30-60 seconds
+- Distributions: Every 5 minutes
+- Trading status: Every 30 seconds
+
+---
+
+## Appendix: Quick Reference
+
+### Authentication Headers
+
+```
+X-SD-KEY: sd_live_<your_key_id>
+X-SD-SECRET: <your_96_char_secret>
+X-SD-TIMESTAMP: <unix_milliseconds>
+```
+
+### Most Common Endpoints
+
+| Action | Method | Endpoint | Scope |
+|--------|--------|----------|-------|
+| Browse properties | GET | `/api/properties` | None (public) |
+| View holdings | GET | `/api/portfolio/holdings?walletAddress=0x...` | `portfolio:read` |
+| View orders | GET | `/api/order-book/my-orders` | `orders:read` |
+| Place order | POST | `/api/order-book/create` | `orders:write` |
+| Check distributions | GET | `/api/distributions/unclaimed/0x...` | `distributions:read` |
+| Order book depth | GET | `/api/order-book/book/:propertyId` | None (public) |
+| Trading status | GET | `/api/trading-status/status/:propertyId` | None (public) |
+| Merkle proof | GET | `/api/merkle/proof/:address` | None (public) |
+
+### Complete Endpoint Map
+
+**Public (no auth):**
+- `GET /api/properties`
+- `GET /api/explorer/properties`
+- `GET /api/trading-status/status/:propertyId`
+- `GET /api/token-stats/total-supply`
+- `GET /api/token-stats/total-balance`
+- `GET /api/merkle/proof/:address`
+- `GET /api/buyout/active-offers/:propertyId`
+- `GET /api/buyout/premium-vote-status/:propertyId`
+- `GET /api/buyout/voter-status/:propertyId/:walletAddress`
+- `GET /api/buyout/property-financials/:propertyId`
+- `GET /api/order-book/book/:propertyId`
+
+**Authenticated (API key required):**
+- `GET /api/portfolio/summary` - `portfolio:read`
+- `GET /api/portfolio/holdings` - `portfolio:read`
+- `GET /api/portfolio/distributions` - `portfolio:read`
+- `GET /api/portfolio/performance` - `portfolio:read`
+- `GET /api/portfolio/trades` - `portfolio:read`
+- `GET /api/portfolio/income` - `portfolio:read`
+- `GET /api/trading/orders` - `orders:read`
+- `GET /api/trading/orders/buy` - `orders:read`
+- `GET /api/trading/orders/sell` - `orders:read`
+- `GET /api/order-book/my-orders` - `orders:read`
+- `POST /api/order-book/create` - `orders:write`
+- `POST /api/token-purchase/gasless` - `trading:execute`
+- `GET /api/distributions/unclaimed/:walletAddress` - `distributions:read`
+- `GET /api/distributions/claim-data/:walletAddress` - `distributions:read`
+- `POST /api/distributions/record-claim` - `distributions:read`
+- `GET /api/distributions/history/:walletAddress` - `distributions:read`
+- `GET /api/buyout/check-approval/:propertyId` - `buyout:read`
+- `GET /api/buyout/offer-requirements/:propertyId` - `buyout:read`
+- `GET /api/buyout/my-position/:propertyId` - `buyout:read`
+
+---
+
+## Support
+
+If you encounter issues with the API:
+1. Check the error response body for specific error codes and messages
+2. Verify your API key is active using `GET /api/api-keys` (via web session)
+3. Ensure your clock is synchronized (timestamp within 30 seconds)
+4. Check rate limit headers to see if you're being throttled

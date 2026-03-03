@@ -1,0 +1,749 @@
+openapi: 3.1.0
+info:
+  title: SecondaryDAO API
+  description: |
+    Programmatic access to real estate token trading, portfolio data, distributions, and market information.
+
+    ## Authentication
+    Send three headers with every authenticated request:
+    - `X-SD-KEY` — Your API key ID
+    - `X-SD-SECRET` — Your API secret
+    - `X-SD-TIMESTAMP` — Unix milliseconds (within 30s of server time)
+
+    Create API keys from your SecondaryDAO account at Profile > API Keys.
+  version: '1.0.0'
+  contact:
+    name: SecondaryDAO
+    url: https://secondarydao.com
+
+servers:
+  - url: https://api.secondarydao.com
+    description: Production
+  - url: http://localhost:5000
+    description: Local Development
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-SD-KEY
+      description: API key ID (e.g., sd_live_a1b2c3d4e5f6)
+    ApiSecretAuth:
+      type: apiKey
+      in: header
+      name: X-SD-SECRET
+      description: API secret (96-char hex string)
+    ApiTimestamp:
+      type: apiKey
+      in: header
+      name: X-SD-TIMESTAMP
+      description: Unix timestamp in milliseconds
+
+  schemas:
+    Property:
+      type: object
+      properties:
+        _id:
+          type: string
+        name:
+          type: string
+        location:
+          type: string
+        propertyValue:
+          type: number
+        tokenPrice:
+          type: number
+        totalSupply:
+          type: number
+        tokenSymbol:
+          type: string
+        status:
+          type: string
+          enum: [selling, trading, coming_soon, halted]
+        bestBid:
+          type: number
+        bestAsk:
+          type: number
+        lastTradePrice:
+          type: number
+
+    Holding:
+      type: object
+      properties:
+        propertyAddress:
+          type: string
+        propertyName:
+          type: string
+        tokenSymbol:
+          type: string
+        tokenAmount:
+          type: string
+        currentPrice:
+          type: number
+        usdValue:
+          type: number
+        percentageOwnership:
+          type: number
+
+    Order:
+      type: object
+      properties:
+        _id:
+          type: string
+        orderId:
+          type: string
+        propertyId:
+          type: string
+        orderType:
+          type: string
+          enum: [buy, sell]
+        executionType:
+          type: string
+          enum: [limit, market]
+        tokenAmount:
+          type: number
+        pricePerToken:
+          type: number
+        status:
+          type: string
+          enum: [open, filled, partially_filled, cancelled, expired]
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateOrderRequest:
+      type: object
+      required: [propertyId, orderType, executionType, tokenAmount, pricePerToken, walletAddress]
+      properties:
+        propertyId:
+          type: string
+          description: MongoDB ID of the property
+        orderType:
+          type: string
+          enum: [buy, sell]
+        executionType:
+          type: string
+          enum: [limit, market]
+        tokenAmount:
+          type: number
+          description: Number of tokens
+        pricePerToken:
+          type: number
+          description: Price per token in USD
+        walletAddress:
+          type: string
+          description: Your connected wallet address
+        timeInForce:
+          type: string
+          enum: [GTC, IOC, FOK, GTD]
+          default: GTC
+        expirationHours:
+          type: integer
+          minimum: 1
+          maximum: 720
+          description: Hours until order expires (max 30 days)
+        conditions:
+          type: object
+          properties:
+            minFillAmount:
+              type: number
+            maxSlippage:
+              type: number
+              maximum: 50
+            postOnly:
+              type: boolean
+
+    UnclaimedDistributions:
+      type: object
+      properties:
+        success:
+          type: boolean
+        totalUnclaimed:
+          type: number
+        byProperty:
+          type: array
+          items:
+            type: object
+            properties:
+              propertyId:
+                type: string
+              propertyName:
+                type: string
+              unclaimed:
+                type: number
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+
+security:
+  - ApiKeyAuth: []
+    ApiSecretAuth: []
+    ApiTimestamp: []
+
+paths:
+  /api/properties:
+    get:
+      summary: List Properties
+      description: Returns all available properties with market data. Public endpoint.
+      tags: [Market Data]
+      security: []
+      responses:
+        '200':
+          description: Properties list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  properties:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Property'
+
+  /api/explorer/properties:
+    get:
+      summary: Explorer Properties
+      description: Returns properties with contract addresses and distribution data. Public endpoint.
+      tags: [Market Data]
+      security: []
+      responses:
+        '200':
+          description: Explorer properties
+
+  /api/trading-status/status/{propertyId}:
+    get:
+      summary: Trading Status
+      description: Check if a property is currently trading. Public endpoint.
+      tags: [Market Data]
+      security: []
+      parameters:
+        - name: propertyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Trading status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  buttonState:
+                    type: string
+                    enum: [buy, launching, coming_soon, disabled, auto_launch_ready]
+                  buttonText:
+                    type: string
+                  message:
+                    type: string
+
+  /api/order-book/book/{propertyId}:
+    get:
+      summary: Order Book
+      description: Get order book depth for a property. Public endpoint.
+      tags: [Market Data]
+      security: []
+      parameters:
+        - name: propertyId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Order book
+
+  /api/merkle/proof/{address}:
+    get:
+      summary: Merkle Proof
+      description: Get merkle proof for on-chain token purchases. Public endpoint.
+      tags: [Market Data]
+      security: []
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+            description: Wallet address (0x...)
+      responses:
+        '200':
+          description: Merkle proof
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  address:
+                    type: string
+                  isWhitelisted:
+                    type: boolean
+                  root:
+                    type: string
+                  proof:
+                    type: array
+                    items:
+                      type: string
+
+  /api/token-stats/total-supply:
+    get:
+      summary: Total Token Supply
+      tags: [Market Data]
+      security: []
+      responses:
+        '200':
+          description: Token supply stats
+
+  /api/buyout/active-offers/{propertyId}:
+    get:
+      summary: Active Buyout Offers
+      tags: [Market Data]
+      security: []
+      parameters:
+        - name: propertyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Active offers
+
+  /api/portfolio/holdings:
+    get:
+      summary: Get Holdings
+      description: Token holdings for a wallet
+      tags: [Portfolio]
+      parameters:
+        - name: walletAddress
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Holdings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  holdings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Holding'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/summary:
+    get:
+      summary: Portfolio Summary
+      tags: [Portfolio]
+      parameters:
+        - name: walletAddress
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Summary
+
+  /api/portfolio/distributions:
+    get:
+      summary: Distribution History
+      tags: [Portfolio]
+      parameters:
+        - name: walletAddress
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Distribution payments
+
+  /api/portfolio/performance:
+    get:
+      summary: Performance Data
+      tags: [Portfolio]
+      parameters:
+        - name: walletAddress
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: period
+          in: query
+          schema:
+            type: string
+            default: 30d
+      responses:
+        '200':
+          description: Performance chart data
+
+  /api/portfolio/trades:
+    get:
+      summary: Trade History
+      tags: [Portfolio]
+      parameters:
+        - name: walletAddress
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Trades
+
+  /api/portfolio/income:
+    get:
+      summary: Income Summary
+      tags: [Portfolio]
+      parameters:
+        - name: walletAddress
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Income breakdown
+
+  /api/trading/orders:
+    get:
+      summary: List Orders
+      tags: [Orders]
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [buy, sell]
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: propertyId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Orders list
+
+  /api/order-book/my-orders:
+    get:
+      summary: My Orders
+      tags: [Orders]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: propertyId
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Your orders
+
+  /api/order-book/create:
+    post:
+      summary: Create Order
+      description: Create a buy or sell order
+      tags: [Orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '200':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  order:
+                    $ref: '#/components/schemas/Order'
+        '400':
+          description: Validation error
+        '403':
+          description: Compliance or scope error
+
+  /api/token-purchase/gasless:
+    post:
+      summary: Gasless Token Purchase
+      description: Purchase tokens using ERC-2612 permit (platform pays gas). Max 10/day.
+      tags: [Trading]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [propertyId, amount, isUSDT, buyerAddress, signature]
+              properties:
+                propertyId:
+                  type: string
+                amount:
+                  type: string
+                  description: Amount in stablecoin units (6 decimals)
+                isUSDT:
+                  type: boolean
+                  description: false for USDC, true for USDT
+                buyerAddress:
+                  type: string
+                signature:
+                  type: object
+                  properties:
+                    v:
+                      type: integer
+                    r:
+                      type: string
+                    s:
+                      type: string
+                    deadline:
+                      type: integer
+      responses:
+        '200':
+          description: Purchase relayed
+        '429':
+          description: Daily limit reached
+
+  /api/distributions/unclaimed/{walletAddress}:
+    get:
+      summary: Unclaimed Earnings
+      tags: [Distributions]
+      parameters:
+        - name: walletAddress
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Unclaimed amounts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnclaimedDistributions'
+
+  /api/distributions/claim-data/{walletAddress}:
+    get:
+      summary: Claim Proofs
+      description: Get merkle proofs for claiming distributions on-chain
+      tags: [Distributions]
+      parameters:
+        - name: walletAddress
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Claim data with merkle proofs
+
+  /api/distributions/history/{walletAddress}:
+    get:
+      summary: Claim History
+      tags: [Distributions]
+      parameters:
+        - name: walletAddress
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Past claims
+
+  /api/distributions/record-claim:
+    post:
+      summary: Record Claim
+      description: Record a successful on-chain claim
+      tags: [Distributions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                walletAddress:
+                  type: string
+                epoch:
+                  type: integer
+                txHash:
+                  type: string
+                amount:
+                  type: string
+      responses:
+        '200':
+          description: Claim recorded
+
+  /api/buyout/check-approval/{propertyId}:
+    get:
+      summary: Check Buyout Approval
+      tags: [Buyouts]
+      parameters:
+        - name: propertyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Approval status
+
+  /api/buyout/offer-requirements/{propertyId}:
+    get:
+      summary: Offer Requirements
+      tags: [Buyouts]
+      parameters:
+        - name: propertyId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: walletAddress
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Requirements and fees
+
+  /api/buyout/my-position/{propertyId}:
+    get:
+      summary: My Token Position
+      tags: [Buyouts]
+      parameters:
+        - name: propertyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Token balance and ownership percentage
+
+  /api/api-keys:
+    get:
+      summary: List API Keys
+      description: List all your API keys (requires JWT web session, not API key)
+      tags: [Key Management]
+      responses:
+        '200':
+          description: API keys list
+    post:
+      summary: Create API Key
+      description: Create a new API key (requires JWT web session). Returns secret ONCE.
+      tags: [Key Management]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, scopes]
+              properties:
+                label:
+                  type: string
+                  description: Human-readable name
+                  example: My Trading Bot
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                    enum: [market:read, portfolio:read, orders:read, orders:write, trading:execute, distributions:read, buyout:read]
+                walletAddress:
+                  type: string
+                  description: Restrict key to a specific wallet (null = all wallets)
+                allowedIPs:
+                  type: array
+                  items:
+                    type: string
+                  description: IP whitelist (empty = allow all)
+                expiresIn:
+                  type: integer
+                  description: Hours until expiration (1-8760)
+      responses:
+        '201':
+          description: Key created (secret shown ONCE)
+
+  /api/api-keys/{keyId}:
+    delete:
+      summary: Revoke API Key
+      tags: [Key Management]
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Key revoked
+    patch:
+      summary: Update API Key
+      description: Update label or IP whitelist
+      tags: [Key Management]
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:
+                  type: string
+                allowedIPs:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Key updated
